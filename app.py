@@ -19,58 +19,59 @@ def load_data(file):
 # 사이드바 설정
 st.sidebar.header("📁 데이터 업로드")
 file_m = st.sidebar.file_uploader("1. 회원 목록 (xlsx/csv)", type=['csv', 'xlsx'])
-file_o = st.sidebar.file_uploader("2. 주문 내역 (xlsx/csv)", type=['csv', 'xlsx'])
 
 if file_m:
     df_raw = load_data(file_m)
     
     if df_raw is not None:
-        # 컬럼명 앞뒤 공백 제거
+        # 1. 컬럼명 정리 및 데이터 추출
         df_raw.columns = [c.strip() for c in df_raw.columns]
         
-        # 요청하신 10가지 항목 매칭 및 추출
-        # 엑셀에 해당 컬럼이 없으면 '-'로 표시하도록 안전하게 처리
-        display_cols = {
-            '고유키': '고유키',
-            '이메일': '이메일',
-            '회원 그룹': '회원 그룹',
-            '이름': '이름',
-            '이용자 유형': '이용자 유형',
-            '가입일': '가입일',
-            '로그인 횟수': '로그인 횟수',
-            '마지막 로그인': '마지막 로그인',
-            '최종 로그인 IP': '최종 로그인 IP',
-            '구매횟수': '구매횟수'
-        }
-        
+        target_cols = ['고유키', '이메일', '회원 그룹', '이름', '이용자 유형', '가입일', '로그인 횟수', '마지막 로그인', '최종 로그인 IP', '구매횟수']
         df_display = pd.DataFrame()
-        for label, col in display_cols.items():
-            if col in df_raw.columns:
-                df_display[label] = df_raw[col]
-            else:
-                df_display[label] = "-" # 컬럼이 없을 경우 대비
-
-        # 기관(회원 그룹)별 필터링
-        groups = ["전체"] + sorted(df_display['회원 그룹'].unique().astype(str).tolist())
-        selected_group = st.sidebar.selectbox("🔍 기관(그룹) 선택", groups)
         
+        for col in target_cols:
+            if col in df_raw.columns:
+                df_display[col] = df_raw[col]
+            else:
+                df_display[col] = "-"
+
+        # 2. 🔥 회원 그룹 분리 로직 (중요!)
+        # 콤마로 된 문자열을 리스트로 변환 후, explode를 사용하여 행을 복제합니다.
+        df_display['회원 그룹'] = df_display['회원 그룹'].astype(str).str.split(',')
+        df_display = df_display.explode('회원 그룹')
+        # 분리된 그룹명 앞뒤의 공백 제거
+        df_display['회원 그룹'] = df_display['회원 그룹'].str.strip()
+        
+        # 3. 사이드바 필터링 (분리된 그룹 기준으로 정렬)
+        all_groups = sorted(df_display['회원 그룹'].unique().tolist())
+        if "nan" in all_groups: all_groups.remove("nan")
+        if "-" in all_groups: all_groups.remove("-")
+        
+        groups = ["전체"] + all_groups
+        selected_group = st.sidebar.selectbox("🔍 기관(그룹) 필터링", groups)
+        
+        # 필터링 적용
         filtered_df = df_display if selected_group == "전체" else df_display[df_display['회원 그룹'] == selected_group]
 
-        # 대시보드 상단 요약
-        col1, col2, col3 = st.columns(3)
-        col1.metric("총 회원 수", f"{len(filtered_df)}명")
-        col2.metric("선택 그룹", selected_group)
+        # 4. 결과 출력
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            st.metric("총 데이터 수", f"{len(filtered_df)}건")
+        with col2:
+            st.info(f"현재 선택된 그룹: **{selected_group}**")
         
-        # 메인 테이블 출력
-        st.subheader(f"📋 {selected_group} 상세 관리 명단")
-        st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+        st.subheader("📋 상세 관리 명단")
+        # 고유키 등 숫자가 소수점으로 보이지 않게 문자열 처리
+        st.dataframe(filtered_df.astype(str), use_container_width=True, hide_index=True)
 
-        # 간단한 통계 차트
+        # 5. 통계 차트 (전체일 때만 표시)
         if selected_group == "전체":
-            st.subheader("📊 기관별 인원 현황")
+            st.subheader("📊 기관별 가입 비중")
             group_counts = df_display['회원 그룹'].value_counts().reset_index()
             group_counts.columns = ['기관명', '인원수']
-            fig = px.pie(group_counts, values='인원수', names='기관명', hole=0.3)
+            # 상위 15개 기관만 표시 (너무 많을 경우 대비)
+            fig = px.bar(group_counts.head(15), x='기관명', y='인원수', text_auto=True, color='인원수')
             st.plotly_chart(fig, use_container_width=True)
 
 else:
