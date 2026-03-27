@@ -34,7 +34,7 @@ if file_m and file_o:
         df_display['회원 그룹'] = df_display['회원 그룹'].str.strip()
 
         # 제외할 그룹 필터 (이 로직 때문에 숫자가 줄어들 수 있음)
-        exclude_prefixes = ('AI-PPT', 'AI-Literacy')
+       # exclude_prefixes = ('AI-PPT', 'AI-Literacy')
         # 제외 그룹에 속하더라도 '전체' 보기에서는 포함시키고 싶다면 아래 한 줄을 주석처리하거나 조정하세요.
         df_display_filtered = df_display[~df_display['회원 그룹'].str.startswith(exclude_prefixes)]
 
