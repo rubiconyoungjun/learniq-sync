@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import plotly.express as px
 
 st.set_page_config(page_title="LearnIQ B2B Dashboard", layout="wide")
 st.title("🏢 LearnIQ 기관별 통합 수강 관리 시스템")
@@ -27,14 +28,8 @@ st.sidebar.markdown("---")
 # 2. 기관 선택 및 회원 목록 업로드
 st.sidebar.subheader("2. 기관별 회원 목록")
 org_options = [
-    "기관 선택",
-    "연세대학교 미래캠퍼스",
-    "연세대학교 신촌/국제캠퍼스",
-    "KAIST",
-    "목원대학교",
-    "공주대학교",
-    "국립중앙도서관",
-    "국립세종도서관"
+    "기관 선택", "연세대학교 미래캠퍼스", "연세대학교 신촌/국제캠퍼스", 
+    "KAIST", "목원대학교", "공주대학교", "국립중앙도서관", "국립세종도서관"
 ]
 selected_org = st.sidebar.selectbox("대상 기관을 선택하세요", org_options)
 file_m = st.sidebar.file_uploader(f"[{selected_org}] 회원 목록 업로드", type=['csv', 'xlsx'])
@@ -44,7 +39,7 @@ if file_o and file_m and selected_org != "기관 선택":
     df_m_raw = load_data(file_m)
     
     if df_o_raw is not None and df_m_raw is not None:
-        # 컬럼 정리
+        # 컬럼 공백 제거
         df_o_raw.columns = [c.strip() for c in df_o_raw.columns]
         df_m_raw.columns = [c.strip() for c in df_m_raw.columns]
 
@@ -58,59 +53,79 @@ if file_o and file_m and selected_org != "기관 선택":
         }
         df_master = df_o_raw[list(rename_o_dict.keys())].copy().rename(columns=rename_o_dict)
 
-        # --- [Step 2] 회원 데이터 전처리 (선택한 기관명 주입) ---
-        # 이메일 매칭을 위한 회원 정보
+        # --- [Step 2] 회원 데이터 전처리 및 매칭 키 생성 ---
         df_member = df_m_raw.copy()
-        
-        # 드롭다운에서 선택한 기관명을 '소속기관' 컬럼으로 강제 지정 (AI- 등 정제 필요 없음)
         df_member['소속기관'] = selected_org
         
-        # 가져올 추가 회원 정보 리스트
+        # 이메일 + 성명 복합 매칭 키 생성 (데이터 정제 포함)
+        def create_match_key(df, email_col, name_col):
+            return (df[email_col].astype(str).str.strip().str.lower() + "_" + 
+                    df[name_col].astype(str).str.strip())
+
+        df_master['match_key'] = create_match_key(df_master, '이메일', '성명')
+        df_member['match_key'] = create_match_key(df_member, '이메일', '성명')
+
+        # 가져올 상세 정보 리스트
         m_cols_to_fetch = [
-            '이메일', '소속기관', '고유키', '아이디', '이용자 유형', 
+            'match_key', '소속기관', '고유키', '아이디', '이용자 유형', 
             '가입일', '로그인 횟수', '마지막 로그인', '구매횟수(KRW)'
         ]
         available_m = [c for c in m_cols_to_fetch if c in df_member.columns]
         df_m_subset = df_member[available_m].copy()
         df_m_subset = df_m_subset.rename(columns={'구매횟수(KRW)': '강좌 신청 횟수'})
 
-        # --- [Step 3] 데이터 병합 (이메일 기준) ---
-        df_master['match_key'] = df_master['이메일'].astype(str).str.strip().str.lower()
-        df_m_subset['match_key'] = df_m_subset['이메일'].astype(str).str.strip().str.lower()
-
-        # 주문을 기준으로 회원 정보 매칭
+        # --- [Step 3] 데이터 병합 (이메일 & 성명 동시 매칭) ---
+        # 중복 방지를 위해 회원 정보의 매칭 키 중복 제거 (첫 번째 값 기준)
+        df_m_subset = df_m_subset.drop_duplicates(subset=['match_key'])
+        
         df_final = pd.merge(
             df_master, 
-            df_m_subset.drop(columns=['이메일']), 
+            df_m_subset, 
             on='match_key', 
             how='left'
         )
 
-        # 매칭 실패 건 처리 (선택한 기관 소속이 아닌 주문들)
+        # 사용 후 매칭 키 삭제 및 결측치 처리
         df_final = df_final.drop(columns=['match_key']).fillna("-")
 
-        # --- [Step 4] 화면 출력 ---
-        st.success(f"✅ [{selected_org}] 데이터 매칭이 완료되었습니다.")
+        # --- [Step 4] 화면 출력 및 지표 ---
+        st.success(f"✅ [{selected_org}] 데이터 매칭 및 시각화가 완료되었습니다.")
         
-        # 지표 요약
-        col1, col2 = st.columns(2)
-        matched_count = len(df_final[df_final['소속기관'] == selected_org])
+        col1, col2, col3 = st.columns(3)
+        matched_df = df_final[df_final['소속기관'] == selected_org]
         col1.metric("전체 주문 건수", f"{len(df_master)}건")
-        col2.metric(f"{selected_org} 매칭 건수", f"{matched_count}건")
+        col2.metric(f"{selected_org} 매칭", f"{len(matched_df)}건")
+        col3.metric("매칭률", f"{(len(matched_df)/len(df_master)*100):.1f}%")
 
-        # 결과 테이블
+        # --- [Step 5] 강좌별 수강 횟수 시각화 (Plotly) ---
+        st.markdown("---")
+        st.subheader("📊 강좌별 수강 현황 통계")
+        
+        # 해당 기관 수강 데이터 기반 통계
+        course_stats = matched_df['강좌명'].value_counts().reset_index()
+        course_stats.columns = ['강좌명', '수강횟수']
+
+        if not course_stats.empty:
+            fig = px.bar(course_stats, x='수강횟수', y='강좌명', 
+                         orientation='h',
+                         title=f"[{selected_org}] 강좌별 수강 인기 순위",
+                         text='수강횟수',
+                         color='수강횟수',
+                         color_continuous_scale='Blues')
+            
+            fig.update_layout(yaxis={'categoryorder':'total ascending'}, height=400)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("시각화할 매칭 데이터가 없습니다.")
+
+        # --- [Step 6] 결과 테이블 및 다운로드 ---
+        st.markdown("---")
         st.subheader(f"📋 {selected_org} 통합 수강 리스트")
-        # 해당 기관 데이터만 모아보기 혹은 전체 보기 선택 가능
         view_option = st.radio("보기 설정", ["전체 주문 보기", f"{selected_org} 소속만 보기"], horizontal=True)
         
-        if "소속만 보기" in view_option:
-            display_df = df_final[df_final['소속기관'] == selected_org]
-        else:
-            display_df = df_final
-
+        display_df = matched_df if "소속만 보기" in view_option else df_final
         st.dataframe(display_df.astype(str), use_container_width=True, hide_index=True)
 
-        # 다운로드
         csv = display_df.to_csv(index=False, encoding='utf-8-sig')
         st.download_button(
             label=f"📥 {selected_org} 리포트 다운로드",
