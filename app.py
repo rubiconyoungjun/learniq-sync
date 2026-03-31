@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 
-st.set_page_config(page_title="LearnIQ Data Master", layout="wide")
-st.title("🎯 LearnIQ 주문-회원 데이터 통합 관리")
+st.set_page_config(page_title="LearnIQ B2B Dashboard", layout="wide")
+st.title("🏢 LearnIQ 기관별 통합 수강 관리 시스템")
 
 def load_data(file):
     try:
@@ -15,22 +15,40 @@ def load_data(file):
         st.error(f"파일 읽기 오류: {e}")
         return None
 
-# 사이드바: 데이터 업로드
-st.sidebar.header("📁 데이터 업로드")
-file_m = st.sidebar.file_uploader("1. 회원 목록 파일 (회원2026...)", type=['csv', 'xlsx'])
-file_o = st.sidebar.file_uploader("2. 주문 내역 파일 (Master: 기본_양식...)", type=['csv', 'xlsx'])
+# --- 사이드바 인터페이스 ---
+st.sidebar.header("📁 데이터 업로드 세팅")
 
-if file_m and file_o:
-    df_m_raw = load_data(file_m)
+# 1. 주문 내역 (공통)
+st.sidebar.subheader("1. 공통 주문 내역")
+file_o = st.sidebar.file_uploader("주문 내역(Master) 업로드", type=['csv', 'xlsx'])
+
+st.sidebar.markdown("---")
+
+# 2. 기관 선택 및 회원 목록 업로드
+st.sidebar.subheader("2. 기관별 회원 목록")
+org_options = [
+    "기관 선택",
+    "연세대학교 미래캠퍼스",
+    "연세대학교 신촌/국제캠퍼스",
+    "KAIST",
+    "목원대학교",
+    "공주대학교",
+    "국립중앙도서관",
+    "국립세종도서관"
+]
+selected_org = st.sidebar.selectbox("대상 기관을 선택하세요", org_options)
+file_m = st.sidebar.file_uploader(f"[{selected_org}] 회원 목록 업로드", type=['csv', 'xlsx'])
+
+if file_o and file_m and selected_org != "기관 선택":
     df_o_raw = load_data(file_o)
+    df_m_raw = load_data(file_m)
     
-    if df_m_raw is not None and df_o_raw is not None:
-        # 0. 컬럼명 공백 정리
-        df_m_raw.columns = [c.strip() for c in df_m_raw.columns]
+    if df_o_raw is not None and df_m_raw is not None:
+        # 컬럼 정리
         df_o_raw.columns = [c.strip() for c in df_o_raw.columns]
+        df_m_raw.columns = [c.strip() for c in df_m_raw.columns]
 
-        # --- 1. Master(주문 내역) 데이터 필수 항목 추출 및 용어 변경 ---
-        # 사용자가 요청한 5개 핵심 주문 컬럼
+        # --- [Step 1] 주문 데이터(Master) 전처리 ---
         rename_o_dict = {
             '주문자 이름': '성명',
             '주문자 이메일': '이메일',
@@ -40,65 +58,64 @@ if file_m and file_o:
         }
         df_master = df_o_raw[list(rename_o_dict.keys())].copy().rename(columns=rename_o_dict)
 
-        # --- 2. 회원 목록 정제: 'AI-' 시작 텍스트 삭제 ---
-        def clean_ai_text(group_str):
-            if pd.isna(group_str) or str(group_str).strip() == "":
-                return "-"
-            # 콤마로 분리 -> AI- 제외 -> 다시 합치기
-            parts = [p.strip() for p in str(group_str).split(',')]
-            cleaned = [p for p in parts if not p.upper().startswith('AI-')]
-            return ", ".join(cleaned) if cleaned else "-"
-
-        df_m_cleaned = df_m_raw.copy()
-        df_m_cleaned['회원 그룹'] = df_m_cleaned['회원 그룹'].apply(clean_ai_text)
+        # --- [Step 2] 회원 데이터 전처리 (선택한 기관명 주입) ---
+        # 이메일 매칭을 위한 회원 정보
+        df_member = df_m_raw.copy()
         
-        # 회원 목록에서 가져올 추가 정보 리스트 (용어 변경 포함)
+        # 드롭다운에서 선택한 기관명을 '소속기관' 컬럼으로 강제 지정 (AI- 등 정제 필요 없음)
+        df_member['소속기관'] = selected_org
+        
+        # 가져올 추가 회원 정보 리스트
         m_cols_to_fetch = [
-            '이메일', '고유키', '아이디', '회원 그룹', '이용자 유형', 
+            '이메일', '소속기관', '고유키', '아이디', '이용자 유형', 
             '가입일', '로그인 횟수', '마지막 로그인', '구매횟수(KRW)'
         ]
-        available_m = [c for c in m_cols_to_fetch if c in df_m_cleaned.columns]
-        df_m_subset = df_m_cleaned[available_m].copy()
+        available_m = [c for c in m_cols_to_fetch if c in df_member.columns]
+        df_m_subset = df_member[available_m].copy()
         df_m_subset = df_m_subset.rename(columns={'구매횟수(KRW)': '강좌 신청 횟수'})
 
-        # --- 3. 데이터 연결 (Key: 이메일) ---
-        # 매칭용 소문자 키 생성 (데이터 정규화)
+        # --- [Step 3] 데이터 병합 (이메일 기준) ---
         df_master['match_key'] = df_master['이메일'].astype(str).str.strip().str.lower()
         df_m_subset['match_key'] = df_m_subset['이메일'].astype(str).str.strip().str.lower()
 
-        # Master(주문)를 기준으로 회원 정보를 결합 (Left Join)
+        # 주문을 기준으로 회원 정보 매칭
         df_final = pd.merge(
             df_master, 
-            df_m_subset.drop(columns=['이메일']), # 중복 컬럼 방지
+            df_m_subset.drop(columns=['이메일']), 
             on='match_key', 
             how='left'
         )
 
-        # --- 4. 최종 데이터 정리 ---
-        # 매칭되지 않은 데이터(nan)를 '-'로 채우기
+        # 매칭 실패 건 처리 (선택한 기관 소속이 아닌 주문들)
         df_final = df_final.drop(columns=['match_key']).fillna("-")
 
-        # --- 5. 화면 표시 ---
-        st.success(f"✅ 통합 완료: 주문 내역(Master) {len(df_master)}건 기준 매칭 성공")
+        # --- [Step 4] 화면 출력 ---
+        st.success(f"✅ [{selected_org}] 데이터 매칭이 완료되었습니다.")
         
-        # 검색 필터
-        search = st.text_input("🔍 성명 또는 강좌명으로 검색")
-        if search:
-            df_final = df_final[
-                df_final['성명'].str.contains(search, na=False) | 
-                df_final['강좌명'].str.contains(search, na=False)
-            ]
+        # 지표 요약
+        col1, col2 = st.columns(2)
+        matched_count = len(df_final[df_final['소속기관'] == selected_org])
+        col1.metric("전체 주문 건수", f"{len(df_master)}건")
+        col2.metric(f"{selected_org} 매칭 건수", f"{matched_count}건")
 
-        st.subheader("📋 통합 수강 관리 리스트")
-        st.dataframe(df_final.astype(str), use_container_width=True, hide_index=True)
+        # 결과 테이블
+        st.subheader(f"📋 {selected_org} 통합 수강 리스트")
+        # 해당 기관 데이터만 모아보기 혹은 전체 보기 선택 가능
+        view_option = st.radio("보기 설정", ["전체 주문 보기", f"{selected_org} 소속만 보기"], horizontal=True)
+        
+        if "소속만 보기" in view_option:
+            display_df = df_final[df_final['소속기관'] == selected_org]
+        else:
+            display_df = df_final
 
-        # 다운로드 버튼
-        csv = df_final.to_csv(index=False, encoding='utf-8-sig')
+        st.dataframe(display_df.astype(str), use_container_width=True, hide_index=True)
+
+        # 다운로드
+        csv = display_df.to_csv(index=False, encoding='utf-8-sig')
         st.download_button(
-            label="📥 최종 통합 데이터 다운로드 (CSV)",
+            label=f"📥 {selected_org} 리포트 다운로드",
             data=csv,
-            file_name="LearnIQ_Final_Report.csv",
-            mime="text/csv"
+            file_name=f"LearnIQ_{selected_org}_Report.csv"
         )
 else:
-    st.info("💡 사이드바에서 주문 내역(Master)과 회원 목록 파일을 업로드해 주세요.")
+    st.info("💡 왼쪽 사이드바에서 **[공통 주문 내역]**을 업로드한 후, **[기관 선택]** 및 **[회원 목록]**을 업로드해 주세요.")
