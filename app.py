@@ -53,26 +53,39 @@ if file_o and file_m and selected_org != "기관 선택":
         }
         df_master = df_o_raw[list(rename_o_dict.keys())].copy().rename(columns=rename_o_dict)
 
-        # --- [Step 2] 회원 데이터 전처리 및 매칭 키 생성 ---
-        df_member = df_m_raw.copy()
-        df_member['소속기관'] = selected_org
-        
-        # 이메일 + 성명 복합 매칭 키 생성 (데이터 정제 포함)
-        def create_match_key(df, email_col, name_col):
-            return (df[email_col].astype(str).str.strip().str.lower() + "_" + 
-                    df[name_col].astype(str).str.strip())
+       # --- [Step 2] 회원 데이터 전처리 및 매칭 키 생성 ---
+df_member = df_m_raw.copy()
+df_member['소속기관'] = selected_org
 
-        df_master['match_key'] = create_match_key(df_master, '이메일', '성명')
-        df_member['match_key'] = create_match_key(df_member, '이메일', '성명')
+# 회원 목록에서 '성명' 또는 '이름' 컬럼 찾기
+if '성명' in df_member.columns:
+    m_name_col = '성명'
+elif '이름' in df_member.columns:
+    m_name_col = '이름'
+else:
+    st.error("⚠️ 회원 목록에 '성명' 또는 '이름' 컬럼이 없습니다. 컬럼명을 확인해주세요.")
+    st.stop()
 
-        # 가져올 상세 정보 리스트
-        m_cols_to_fetch = [
-            'match_key', '소속기관', '고유키', '아이디', '이용자 유형', 
-            '가입일', '로그인 횟수', '마지막 로그인', '구매횟수(KRW)'
-        ]
-        available_m = [c for c in m_cols_to_fetch if c in df_member.columns]
-        df_m_subset = df_member[available_m].copy()
-        df_m_subset = df_m_subset.rename(columns={'구매횟수(KRW)': '강좌 신청 횟수'})
+# 이메일 + 성명 복합 매칭 키 생성 함수 (에러 방지용)
+def create_match_key(df, email_col, name_col):
+    return (df[email_col].astype(str).str.strip().str.lower() + "_" + 
+            df[name_col].astype(str).str.strip())
+
+# 주문 데이터와 회원 데이터 각각에 매칭 키 생성
+df_master['match_key'] = create_match_key(df_master, '이메일', '성명')
+df_member['match_key'] = create_match_key(df_member, '이메일', m_name_col)
+
+# 가져올 상세 정보 리스트 (회원 목록에 실제 존재하는 컬럼만 추출)
+m_cols_to_fetch = [
+    'match_key', '소속기관', '고유키', '아이디', '이용자 유형', 
+    '가입일', '로그인 횟수', '마지막 로그인', '구매횟수(KRW)'
+]
+available_m = [c for c in m_cols_to_fetch if c in df_member.columns]
+df_m_subset = df_member[available_m].copy()
+
+# '구매횟수(KRW)' 컬럼이 있으면 이름 변경
+if '구매횟수(KRW)' in df_m_subset.columns:
+    df_m_subset = df_m_subset.rename(columns={'구매횟수(KRW)': '강좌 신청 횟수'})
 
         # --- [Step 3] 데이터 병합 (이메일 & 성명 동시 매칭) ---
         # 중복 방지를 위해 회원 정보의 매칭 키 중복 제거 (첫 번째 값 기준)
